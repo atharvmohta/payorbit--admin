@@ -1,0 +1,203 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PayOrbit Admin Dashboard</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#080d18;color:#fff;font-family:Arial,sans-serif}
+header{padding:20px;background:#111b2d;border-bottom:1px solid #263650;display:flex;justify-content:space-between;align-items:center}
+h1{font-size:21px;margin:0}
+main{padding:20px;max-width:1100px;margin:auto}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:14px}
+.card,.panel{background:#111b2d;border:1px solid #263650;border-radius:13px;padding:18px;margin-bottom:18px}
+.card p{color:#9eacc2;margin:0 0 10px}
+.card strong{font-size:26px}
+h2{font-size:18px;margin-top:0}
+table{width:100%;border-collapse:collapse;min-width:550px}
+th,td{text-align:left;padding:12px;border-bottom:1px solid #263650;font-size:13px}
+.table-wrap{overflow-x:auto}
+button{padding:9px 12px;border:0;border-radius:7px;background:#6d8cff;color:white;cursor:pointer;margin:3px}
+button.reject{background:#a94455}
+button:disabled{opacity:.5}
+.muted{color:#9eacc2;font-size:13px}
+#message{color:#9eacc2}
+</style>
+</head>
+<body>
+<header>
+  <h1>PayOrbit Admin</h1>
+  <button id="logoutBtn">Logout</button>
+</header>
+
+<main>
+  <p id="message">Checking admin access...</p>
+
+  <div id="dashboard" hidden>
+    <div class="cards">
+      <div class="card"><p>Total Profiles</p><strong id="usersCount">0</strong></div>
+      <div class="card"><p>Total Transactions</p><strong id="transactionsCount">0</strong></div>
+      <div class="card"><p>Withdrawal Requests</p><strong id="withdrawalsCount">0</strong></div>
+      <div class="card"><p>Pending Requests</p><strong id="pendingCount">0</strong></div>
+    </div>
+
+    <section class="panel">
+      <h2>Registered Profiles</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>User ID</th><th>Created</th></tr></thead>
+          <tbody id="usersTable"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Transactions</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Type</th><th>Amount</th><th>Status</th><th>Description</th><th>Date</th></tr></thead>
+          <tbody id="transactionsTable"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Demo Withdrawal Requests</h2>
+      <p class="muted">Demo status management only. No money is transferred.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>User ID</th><th>Amount</th><th>Method</th><th>Status</th><th>Action</th></tr></thead>
+          <tbody id="withdrawalsTable"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="supabase.js"></script>
+<script>
+const message = document.getElementById("message");
+const dashboard = document.getElementById("dashboard");
+
+function safe(value) {
+  return String(value ?? "").replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  })[c]);
+}
+
+async function start() {
+  const {data:{session},error} = await supabaseClient.auth.getSession();
+  if(error || !session) {
+    location.href = "index.html";
+    return;
+  }
+
+  const {data:role,error:roleError} = await supabaseClient
+    .from("admin_users")
+    .select("user_id")
+    .eq("user_id",session.user.id)
+    .maybeSingle();
+
+  if(roleError || !role) {
+    await supabaseClient.auth.signOut();
+    location.href = "index.html";
+    return;
+  }
+
+  dashboard.hidden = false;
+  message.textContent = "Admin access verified.";
+  await loadDashboard();
+}
+
+async function loadDashboard() {
+  message.textContent = "Loading dashboard...";
+
+  const [users,transactions,withdrawals] = await Promise.all([
+    supabaseClient.from("profiles").select("*").order("created_at",{ascending:false}),
+    supabaseClient.from("transactions").select("*").order("created_at",{ascending:false}).limit(100),
+    supabaseClient.from("withdrawal_requests").select("*").order("created_at",{ascending:false}).limit(100)
+  ]);
+
+  const problem = users.error || transactions.error || withdrawals.error;
+  if(problem) {
+    message.textContent = "Could not load data: " + problem.message;
+    return;
+  }
+
+  const u = users.data || [];
+  const t = transactions.data || [];
+  const w = withdrawals.data || [];
+
+  document.getElementById("usersCount").textContent = u.length;
+  document.getElementById("transactionsCount").textContent = t.length;
+  document.getElementById("withdrawalsCount").textContent = w.length;
+  document.getElementById("pendingCount").textContent =
+    w.filter(x => x.status === "pending").length;
+
+  document.getElementById("usersTable").innerHTML = u.map(x => `
+    <tr>
+      <td>${safe(x.display_name || "No name")}</td>
+      <td>${safe(x.id)}</td>
+      <td>${safe(x.created_at ? new Date(x.created_at).toLocaleString() : "-")}</td>
+    </tr>`).join("") || "<tr><td colspan='3'>No profiles found</td></tr>";
+
+  document.getElementById("transactionsTable").innerHTML = t.map(x => `
+    <tr>
+      <td>${safe(x.type)}</td>
+      <td>₹${safe(x.amount)}</td>
+      <td>${safe(x.status)}</td>
+      <td>${safe(x.description)}</td>
+      <td>${safe(x.created_at ? new Date(x.created_at).toLocaleString() : "-")}</td>
+    </tr>`).join("") || "<tr><td colspan='5'>No transactions found</td></tr>";
+
+  document.getElementById("withdrawalsTable").innerHTML = w.map(x => `
+    <tr>
+      <td>${safe(x.user_id)}</td>
+      <td>₹${safe(x.amount)}</td>
+      <td>${safe(x.method)}</td>
+      <td>${safe(x.status)}</td>
+      <td>
+        ${x.status === "pending" ? `
+          <button data-id="${safe(x.id)}" data-status="approved">Approve demo</button>
+          <button class="reject" data-id="${safe(x.id)}" data-status="rejected">Reject</button>
+        ` : "-"}
+      </td>
+    </tr>`).join("") || "<tr><td colspan='5'>No requests found</td></tr>";
+
+  message.textContent = "Dashboard updated.";
+}
+
+document.getElementById("withdrawalsTable").addEventListener("click", async event => {
+  const btn = event.target.closest("button[data-id]");
+  if(!btn) return;
+
+  btn.disabled = true;
+  const {error} = await supabaseClient
+    .from("withdrawal_requests")
+    .update({status:btn.dataset.status})
+    .eq("id",btn.dataset.id);
+
+  if(error) {
+    message.textContent = "Update failed: " + error.message;
+    btn.disabled = false;
+    return;
+  }
+
+  message.textContent = "Demo request status updated.";
+  await loadDashboard();
+});
+
+document.getElementById("logoutBtn").addEventListener("click", async () => {
+  await supabaseClient.auth.signOut();
+  location.href = "index.html";
+});
+
+start().catch(error => {
+  message.textContent = "Error: " + error.message;
+});
+</script>
+</body>
+</html>
